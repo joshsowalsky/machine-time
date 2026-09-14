@@ -1,0 +1,1158 @@
+<title>Machine Time</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Archivo:wght@400;500;600;800&family=IBM+Plex+Mono:wght@400;500;600&display=swap">
+
+<style>
+  :root {
+    --ground:      #EDEEF0;
+    --panel:       #FFFFFF;
+    --panel-sunk:  #E2E4E8;
+    --edge:        #CBCFD6;
+    --ink:         #16191D;
+    --ink-soft:    #5A626D;
+    --ink-faint:   #8B939E;
+
+    /* Temperature ramp. Not decoration: lock confidence is shown as heat. */
+    --cold:        #5B7A99;
+    --warm:        #D98E2B;
+    --hot:         #E4572E;
+
+    --shadow:      0 1px 2px rgba(22, 25, 29, .08), 0 8px 24px rgba(22, 25, 29, .06);
+    --radius:      14px;
+  }
+
+  @media (prefers-color-scheme: dark) {
+    :root:not([data-theme="light"]) {
+      --ground:     #14171A;
+      --panel:      #1D2126;
+      --panel-sunk: #101316;
+      --edge:       #2E343B;
+      --ink:        #ECEEF1;
+      --ink-soft:   #A4ADB8;
+      --ink-faint:  #6C757F;
+      --cold:       #7CA0C4;
+      --warm:       #EBA53F;
+      --hot:        #FF7043;
+      --shadow:     0 1px 2px rgba(0, 0, 0, .5), 0 10px 28px rgba(0, 0, 0, .35);
+    }
+  }
+
+  :root[data-theme="dark"] {
+    --ground:     #14171A;
+    --panel:      #1D2126;
+    --panel-sunk: #101316;
+    --edge:       #2E343B;
+    --ink:        #ECEEF1;
+    --ink-soft:   #A4ADB8;
+    --ink-faint:  #6C757F;
+    --cold:       #7CA0C4;
+    --warm:       #EBA53F;
+    --hot:        #FF7043;
+    --shadow:     0 1px 2px rgba(0, 0, 0, .5), 0 10px 28px rgba(0, 0, 0, .35);
+  }
+
+  * { box-sizing: border-box; }
+
+  body {
+    background: var(--ground);
+    color: var(--ink);
+    font-family: Archivo, "Helvetica Neue", Arial, sans-serif;
+    -webkit-font-smoothing: antialiased;
+    margin: 0;
+  }
+
+  .wrap {
+    max-width: 560px;
+    margin: 0 auto;
+    padding-inline: 20px;
+    padding-block: 28px 48px;
+    display: flex;
+    flex-direction: column;
+    gap: 22px;
+  }
+
+  /* ---- header ---- */
+  header { display: flex; flex-direction: column; gap: 8px; }
+
+  .eyebrow {
+    font-family: "IBM Plex Mono", ui-monospace, Menlo, monospace;
+    font-size: 11px;
+    letter-spacing: .16em;
+    text-transform: uppercase;
+    color: var(--ink-faint);
+  }
+
+  h1 {
+    font-size: clamp(30px, 9vw, 42px);
+    font-weight: 800;
+    letter-spacing: -.03em;
+    line-height: 1;
+    margin: 0;
+    text-wrap: balance;
+  }
+
+  .sub {
+    font-size: 15px;
+    line-height: 1.5;
+    color: var(--ink-soft);
+    margin: 0;
+    max-width: 46ch;
+  }
+
+  /* ---- the strip ---- */
+  .scope {
+    position: relative;
+    background: var(--panel-sunk);
+    border: 1px solid var(--edge);
+    border-radius: var(--radius);
+    overflow: hidden;
+    height: 168px;
+  }
+
+  canvas { display: block; width: 100%; height: 100%; }
+
+  .scope-tag {
+    position: absolute;
+    top: 10px; left: 12px;
+    font-family: "IBM Plex Mono", ui-monospace, Menlo, monospace;
+    font-size: 10px;
+    letter-spacing: .14em;
+    text-transform: uppercase;
+    color: var(--ink-faint);
+    pointer-events: none;
+  }
+
+  .scope-hint {
+    position: absolute;
+    inset: 0;
+    display: grid;
+    place-items: center;
+    padding: 24px;
+    text-align: center;
+    font-size: 14px;
+    line-height: 1.5;
+    color: var(--ink-faint);
+    pointer-events: none;
+  }
+
+  /* ---- primary control ---- */
+  .go {
+    appearance: none;
+    border: 0;
+    width: 100%;
+    padding: 20px 24px;
+    border-radius: var(--radius);
+    background: var(--ink);
+    color: var(--ground);
+    font-family: Archivo, sans-serif;
+    font-size: 18px;
+    font-weight: 600;
+    letter-spacing: -.01em;
+    cursor: pointer;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: 12px;
+    transition: transform .12s ease, opacity .12s ease;
+  }
+  .go:hover  { opacity: .88; }
+  .go:active { transform: scale(.985); }
+  .go:disabled { opacity: .45; cursor: default; }
+  .go[data-armed="true"] { background: var(--hot); color: #fff; }
+  .go:focus-visible { outline: 3px solid var(--cold); outline-offset: 3px; }
+
+  .dot {
+    width: 9px; height: 9px; border-radius: 50%;
+    background: currentColor;
+  }
+  .dot[data-pulse="true"] { animation: blink 1s steps(2, end) infinite; }
+  @keyframes blink { 50% { opacity: .25; } }
+
+  /* ---- readouts ---- */
+  .readout {
+    display: grid;
+    grid-template-columns: repeat(3, 1fr);
+    gap: 1px;
+    background: var(--edge);
+    border: 1px solid var(--edge);
+    border-radius: var(--radius);
+    overflow: hidden;
+  }
+
+  .cell {
+    background: var(--panel);
+    padding: 14px 12px 16px;
+    display: flex;
+    flex-direction: column;
+    gap: 5px;
+    min-width: 0;
+  }
+
+  .cell-label {
+    font-family: "IBM Plex Mono", ui-monospace, Menlo, monospace;
+    font-size: 10px;
+    letter-spacing: .13em;
+    text-transform: uppercase;
+    color: var(--ink-faint);
+  }
+
+  .cell-value {
+    font-family: "IBM Plex Mono", ui-monospace, Menlo, monospace;
+    font-variant-numeric: tabular-nums;
+    font-size: 22px;
+    font-weight: 600;
+    letter-spacing: -.02em;
+    line-height: 1;
+    color: var(--ink);
+  }
+
+  .cell-unit {
+    font-family: "IBM Plex Mono", ui-monospace, Menlo, monospace;
+    font-size: 11px;
+    color: var(--ink-faint);
+  }
+
+  /* heat bar reports lock confidence */
+  .heat {
+    height: 6px;
+    border-radius: 3px;
+    background: var(--panel-sunk);
+    overflow: hidden;
+    margin-top: 3px;
+  }
+  .heat-fill {
+    height: 100%;
+    width: 0%;
+    background: var(--cold);
+    transition: width .25s ease, background-color .4s ease;
+  }
+
+  /* ---- styles picker ---- */
+  fieldset {
+    border: 1px solid var(--edge);
+    border-radius: var(--radius);
+    padding: 12px;
+    margin: 0;
+    background: var(--panel);
+  }
+  legend {
+    font-family: "IBM Plex Mono", ui-monospace, Menlo, monospace;
+    font-size: 10px;
+    letter-spacing: .13em;
+    text-transform: uppercase;
+    color: var(--ink-faint);
+    padding-inline: 6px;
+  }
+  .kits { display: flex; gap: 8px; flex-wrap: wrap; }
+
+  .kit {
+    flex: 1 1 auto;
+    appearance: none;
+    border: 1px solid var(--edge);
+    background: transparent;
+    color: var(--ink-soft);
+    border-radius: 9px;
+    padding: 10px 12px;
+    font-family: Archivo, sans-serif;
+    font-size: 14px;
+    font-weight: 500;
+    cursor: pointer;
+    white-space: nowrap;
+  }
+  .kit[aria-pressed="true"] {
+    background: var(--ink);
+    border-color: var(--ink);
+    color: var(--ground);
+  }
+  .kit:focus-visible { outline: 3px solid var(--cold); outline-offset: 2px; }
+
+  /* ---- secondary row ---- */
+  .row { display: flex; gap: 10px; }
+  .ghost {
+    flex: 1;
+    appearance: none;
+    border: 1px solid var(--edge);
+    background: var(--panel);
+    color: var(--ink);
+    border-radius: 11px;
+    padding: 13px 14px;
+    font-family: Archivo, sans-serif;
+    font-size: 15px;
+    font-weight: 500;
+    cursor: pointer;
+  }
+  .ghost:hover { border-color: var(--ink-faint); }
+  .ghost:disabled { opacity: .4; cursor: default; }
+  .ghost:focus-visible { outline: 3px solid var(--cold); outline-offset: 2px; }
+
+  /* ---- status / errors ---- */
+  .status {
+    font-family: "IBM Plex Mono", ui-monospace, Menlo, monospace;
+    font-size: 12px;
+    line-height: 1.6;
+    color: var(--ink-soft);
+    min-height: 1.6em;
+  }
+  .status[data-tone="bad"] { color: var(--hot); }
+
+  .note {
+    font-size: 13px;
+    line-height: 1.6;
+    color: var(--ink-faint);
+    border-top: 1px solid var(--edge);
+    padding-top: 16px;
+    margin: 0;
+  }
+  .note strong { color: var(--ink-soft); font-weight: 600; }
+
+  /* ---- microphone troubleshooting ---- */
+  .help {
+    border: 1px solid var(--hot);
+    border-radius: var(--radius);
+    background: var(--panel);
+    padding: 16px;
+    display: flex;
+    flex-direction: column;
+    gap: 12px;
+  }
+  .help h2 {
+    font-size: 16px;
+    font-weight: 600;
+    letter-spacing: -.01em;
+    margin: 0;
+    color: var(--ink);
+  }
+  .help p { margin: 0; font-size: 14px; line-height: 1.55; color: var(--ink-soft); }
+
+  .help ol {
+    margin: 0;
+    padding-left: 20px;
+    display: flex;
+    flex-direction: column;
+    gap: 7px;
+    font-size: 14px;
+    line-height: 1.5;
+    color: var(--ink-soft);
+  }
+  .help li strong { color: var(--ink); font-weight: 600; }
+
+  .popout {
+    display: block;
+    text-align: center;
+    text-decoration: none;
+    background: var(--hot);
+    color: #fff;
+    font-family: Archivo, sans-serif;
+    font-size: 16px;
+    font-weight: 600;
+    padding: 15px 18px;
+    border-radius: 11px;
+  }
+  .popout:focus-visible { outline: 3px solid var(--ink); outline-offset: 3px; }
+
+  .copyline {
+    display: flex;
+    gap: 8px;
+    align-items: center;
+  }
+  .copyline input {
+    flex: 1;
+    min-width: 0;
+    font-family: "IBM Plex Mono", ui-monospace, Menlo, monospace;
+    font-size: 12px;
+    padding: 10px;
+    border-radius: 9px;
+    border: 1px solid var(--edge);
+    background: var(--panel-sunk);
+    color: var(--ink-soft);
+  }
+  .copyline button {
+    appearance: none;
+    border: 1px solid var(--edge);
+    background: var(--panel);
+    color: var(--ink);
+    border-radius: 9px;
+    padding: 10px 14px;
+    font-family: Archivo, sans-serif;
+    font-size: 14px;
+    font-weight: 500;
+    cursor: pointer;
+    white-space: nowrap;
+  }
+
+  details summary {
+    cursor: pointer;
+    font-size: 14px;
+    font-weight: 600;
+    color: var(--ink);
+  }
+  details[open] summary { margin-bottom: 9px; }
+
+  @media (prefers-reduced-motion: reduce) {
+    * { animation-duration: .001ms !important; transition-duration: .001ms !important; }
+  }
+</style>
+
+<div class="wrap">
+  <header>
+    <span class="eyebrow">Rhythm tuner</span>
+    <h1>Machine Time</h1>
+    <p class="sub">
+      Hold your phone near something that repeats — a 3D printer laying down
+      infill, a washing machine, a treadmill — and this finds its rhythm, then
+      builds music locked to it.
+    </p>
+  </header>
+
+  <div class="scope">
+    <canvas id="scope" width="1120" height="336"></canvas>
+    <span class="scope-tag" id="scopeTag">Onset energy</span>
+    <div class="scope-hint" id="scopeHint">Tap Listen and hold the phone close to the machine.</div>
+  </div>
+
+  <button class="go" id="go" type="button">
+    <span class="dot" id="dot"></span>
+    <span id="goLabel">Listen</span>
+  </button>
+
+  <p class="status" id="status">Ready. Listening takes about 12 seconds.</p>
+
+  <section class="help" id="help" hidden>
+    <h2 id="helpTitle">Can't reach the microphone</h2>
+    <p id="helpWhy"></p>
+    <div id="helpBody"></div>
+  </section>
+
+  <div class="readout">
+    <div class="cell">
+      <span class="cell-label">Machine</span>
+      <span class="cell-value" id="machineVal">—</span>
+      <span class="cell-unit" id="machineUnit">per minute</span>
+    </div>
+    <div class="cell">
+      <span class="cell-label">Music</span>
+      <span class="cell-value" id="musicVal">—</span>
+      <span class="cell-unit" id="musicUnit">bpm</span>
+    </div>
+    <div class="cell">
+      <span class="cell-label">Lock</span>
+      <span class="cell-value" id="lockVal">—</span>
+      <span class="cell-unit" id="lockUnit">confidence</span>
+      <div class="heat"><div class="heat-fill" id="heat"></div></div>
+    </div>
+  </div>
+
+  <fieldset>
+    <legend>Sound</legend>
+    <div class="kits" id="kits">
+      <button class="kit" type="button" data-kit="shop"  aria-pressed="true">Shop floor</button>
+      <button class="kit" type="button" data-kit="drift" aria-pressed="false">Drift</button>
+      <button class="kit" type="button" data-kit="pulse" aria-pressed="false">Pulse</button>
+    </div>
+  </fieldset>
+
+  <div class="row">
+    <button class="ghost" id="again" type="button" disabled>Listen again</button>
+    <button class="ghost" id="halve" type="button" disabled>Half / double</button>
+  </div>
+
+  <p class="note">
+    <strong>How it works.</strong> It listens for about 12 seconds, measures the
+    gap between repeated sounds, then picks a musical tempo that divides evenly
+    into that gap — so every beat lands with the machine. The microphone
+    switches off before the music starts: otherwise the phone would hear its own
+    music and follow that instead, and iPhones route sound to the earpiece
+    whenever a mic is live.
+  </p>
+</div>
+
+<script>
+(function () {
+  "use strict";
+
+  // ---- tunables ---------------------------------------------------------
+  const BIN_MS       = 10;      // onset envelope resolution
+  const LISTEN_MS    = 12000;   // how long we sample before deciding
+  const MIN_PERIOD   = 0.22;    // s  - faster than this is a tone, not a rhythm
+  const MAX_PERIOD   = 4.0;     // s  - slower than this is not a groove
+  const TARGET_BPM   = [82, 152];
+  const SCHED_AHEAD  = 0.12;    // s of audio scheduled in advance
+  const SCHED_TICK   = 25;      // ms between scheduler wakeups
+
+  // ---- element handles --------------------------------------------------
+  const el = (id) => document.getElementById(id);
+  const goBtn = el("go"), goLabel = el("goLabel"), dot = el("dot");
+  const statusEl = el("status"), hint = el("scopeHint"), scopeTag = el("scopeTag");
+  const machineVal = el("machineVal"), machineUnit = el("machineUnit");
+  const musicVal = el("musicVal"), lockVal = el("lockVal"), heat = el("heat");
+  const againBtn = el("again"), halveBtn = el("halve");
+  const canvas = el("scope"), g = canvas.getContext("2d");
+
+  // ---- state ------------------------------------------------------------
+  let phase = "idle";           // idle | listening | playing
+  let audio = null, micStream = null, analyser = null, freqBuf = null, prevMag = null;
+  let envelope = [], binStart = 0, binPeak = 0, rafId = 0, listenEndsAt = 0;
+  let result = null;            // { period, confidence, bpm, ratio }
+  let kit = "shop";
+  let master = null, schedTimer = 0, nextNoteTime = 0, step = 0;
+
+  // =======================================================================
+  // Onset detection
+  // =======================================================================
+
+  // Spectral flux: how much energy APPEARED since the last frame. Rising
+  // energy is a hit; falling energy is a decay, and counting it would smear
+  // every onset into the one after it. So only positive differences count.
+  function fluxFrom(mag, prev) {
+    let sum = 0;
+    for (let i = 2; i < mag.length; i++) {
+      const d = mag[i] - prev[i];
+      if (d > 0) sum += d;
+    }
+    return sum;
+  }
+
+  function sampleLoop(now) {
+    if (phase !== "listening") return;
+    rafId = requestAnimationFrame(sampleLoop);
+
+    analyser.getFloatFrequencyData(freqBuf);
+    // dB floor: -100 is silence in Web Audio's scale. Clamp so a quiet room
+    // does not produce enormous "flux" out of noise.
+    for (let i = 0; i < freqBuf.length; i++) {
+      if (!isFinite(freqBuf[i]) || freqBuf[i] < -100) freqBuf[i] = -100;
+    }
+
+    const f = prevMag ? fluxFrom(freqBuf, prevMag) : 0;
+    if (!prevMag) prevMag = new Float32Array(freqBuf.length);
+    prevMag.set(freqBuf);
+
+    // Resample the variable frame rate into fixed bins, so the envelope has a
+    // known sample rate and autocorrelation lags mean real seconds.
+    if (!binStart) binStart = now;
+    binPeak = Math.max(binPeak, f);
+    while (now - binStart >= BIN_MS) {
+      envelope.push(binPeak);
+      binPeak = 0;
+      binStart += BIN_MS;
+    }
+
+    drawLive();
+
+    if (now >= listenEndsAt) decide();
+  }
+
+  // Subtract a local moving average so a steady hum contributes nothing and
+  // only departures from the recent past survive as onsets.
+  function normalize(env) {
+    const W = 12, out = new Float32Array(env.length);
+    let max = 0;
+    for (let i = 0; i < env.length; i++) {
+      let sum = 0, n = 0;
+      for (let j = Math.max(0, i - W); j <= Math.min(env.length - 1, i + W); j++) {
+        sum += env[j]; n++;
+      }
+      const v = env[i] - sum / n;
+      out[i] = v > 0 ? v : 0;
+      if (out[i] > max) max = out[i];
+    }
+    if (max > 0) for (let i = 0; i < out.length; i++) out[i] /= max;
+    return out;
+  }
+
+  // Autocorrelation: slide the envelope over itself and see which shift makes
+  // it line up with itself best. That shift is the repeat interval.
+  function findPeriod(env) {
+    const lo = Math.round(MIN_PERIOD * 1000 / BIN_MS);
+    const hi = Math.min(Math.round(MAX_PERIOD * 1000 / BIN_MS), Math.floor(env.length / 2));
+    if (hi <= lo) return null;
+
+    let energy = 0;
+    for (let i = 0; i < env.length; i++) energy += env[i] * env[i];
+    if (energy <= 1e-9) return null;
+
+    let best = -1, bestLag = -1;
+    const scores = new Float32Array(hi + 1);
+    for (let lag = lo; lag <= hi; lag++) {
+      let s = 0;
+      const n = env.length - lag;
+      for (let i = 0; i < n; i++) s += env[i] * env[i + lag];
+      s /= n;                       // longer lags see fewer samples; normalize
+      scores[lag] = s;
+      if (s > best) { best = s; bestLag = lag; }
+    }
+    if (bestLag < 0) return null;
+
+    // A strong rhythm also correlates at 2x its period. Prefer the shorter
+    // one when it is nearly as strong, or we report half-speed.
+    const half = Math.round(bestLag / 2);
+    if (half >= lo && scores[half] > best * 0.82) bestLag = half;
+
+    const mean = energy / env.length;
+    const confidence = Math.max(0, Math.min(1, scores[bestLag] / (mean || 1)));
+    return { period: bestLag * BIN_MS / 1000, confidence };
+  }
+
+  // Pick a musical tempo that divides evenly into the machine's interval, so
+  // beats land on it. Simple whole-number relationships only: at 9/4 the beat
+  // drifts through the bar and there is nothing left to hear.
+  function chooseTempo(period) {
+    const options = [];
+    for (const [num, den] of [[1,1],[2,1],[3,1],[4,1],[6,1],[8,1],[1,2],[3,2],[1,4]]) {
+      const bpm = 60 * (num / den) / period;
+      if (bpm >= TARGET_BPM[0] && bpm <= TARGET_BPM[1]) {
+        const centre = Math.abs(Math.log2(bpm / 116));
+        options.push({ bpm, ratio: [num, den], cost: (num + den) * 0.5 + centre * 3 });
+      }
+    }
+    if (!options.length) {
+      // Nothing simple fits: double or halve until it is at least audible.
+      let bpm = 60 / period;
+      while (bpm < TARGET_BPM[0]) bpm *= 2;
+      while (bpm > TARGET_BPM[1]) bpm /= 2;
+      return { bpm, ratio: null };
+    }
+    options.sort((a, b) => a.cost - b.cost);
+    return options[0];
+  }
+
+  function decide() {
+    const env = normalize(envelope);
+    const found = findPeriod(env);
+    stopMic();
+
+    if (!found || found.confidence < 0.12) {
+      phase = "idle";
+      setStatus("No steady rhythm found. Get closer to the machine, somewhere quiet, and try again.", "bad");
+      resetButton();
+      againBtn.disabled = false;
+      return;
+    }
+
+    const tempo = chooseTempo(found.period);
+    result = { period: found.period, confidence: found.confidence, bpm: tempo.bpm, ratio: tempo.ratio };
+    showResult();
+    startMusic();
+  }
+
+  function showResult() {
+    const perMin = 60 / result.period;
+    machineVal.textContent = perMin.toFixed(1);
+    machineUnit.textContent = `per minute · ${result.period.toFixed(2)}s apart`;
+    musicVal.textContent = Math.round(result.bpm);
+    lockVal.textContent = Math.round(result.confidence * 100) + "%";
+
+    const c = result.confidence;
+    heat.style.width = Math.max(6, Math.min(100, c * 100)) + "%";
+    heat.style.backgroundColor = c > 0.55 ? "var(--hot)" : c > 0.3 ? "var(--warm)" : "var(--cold)";
+
+    const r = result.ratio;
+    const rel = !r ? "closest musical speed"
+      : r[1] === 1 && r[0] === 1 ? "one beat per repeat"
+      : r[1] === 1 ? `${r[0]} beats per repeat`
+      : `one beat every ${r[1] / r[0] === 2 ? "two" : r[1]} repeats`;
+    setStatus(`Locked — ${rel}.`);
+  }
+
+  // =======================================================================
+  // Drawing
+  // =======================================================================
+
+  function fitCanvas() {
+    const dpr = Math.min(window.devicePixelRatio || 1, 2);
+    const r = canvas.getBoundingClientRect();
+    canvas.width = Math.round(r.width * dpr);
+    canvas.height = Math.round(r.height * dpr);
+    g.setTransform(dpr, 0, 0, dpr, 0, 0);
+  }
+
+  function css(name) {
+    return getComputedStyle(document.documentElement).getPropertyValue(name).trim();
+  }
+
+  function drawLive() {
+    const w = canvas.width / (Math.min(window.devicePixelRatio || 1, 2));
+    const h = canvas.height / (Math.min(window.devicePixelRatio || 1, 2));
+    g.clearRect(0, 0, w, h);
+
+    const visible = Math.floor(w / 2);
+    const slice = envelope.slice(-visible);
+    let max = 1e-9;
+    for (const v of slice) if (v > max) max = v;
+
+    const c = css("--cold");
+    g.fillStyle = c;
+    for (let i = 0; i < slice.length; i++) {
+      const bar = (slice[i] / max) * (h - 34);
+      g.globalAlpha = 0.35 + 0.65 * (slice[i] / max);
+      g.fillRect(i * 2, h - 14 - bar, 1.4, bar);
+    }
+    g.globalAlpha = 1;
+  }
+
+  function drawLocked(beatPhase) {
+    const dpr = Math.min(window.devicePixelRatio || 1, 2);
+    const w = canvas.width / dpr, h = canvas.height / dpr;
+    g.clearRect(0, 0, w, h);
+
+    const env = normalize(envelope);
+    const visible = Math.floor(w / 2);
+    const slice = Array.from(env.slice(-visible));
+
+    // the machine's own onsets, dimmed
+    g.fillStyle = css("--ink-faint");
+    for (let i = 0; i < slice.length; i++) {
+      const bar = slice[i] * (h - 40);
+      g.globalAlpha = 0.30;
+      g.fillRect(i * 2, h - 14 - bar, 1.4, bar);
+    }
+    g.globalAlpha = 1;
+
+    // the beat grid we chose, over the top
+    const px = (result.period * 1000 / BIN_MS) * 2;
+    g.strokeStyle = css("--hot");
+    g.lineWidth = 1;
+    for (let x = w - 1; x > 0; x -= px) {
+      g.globalAlpha = 0.5;
+      g.beginPath();
+      g.moveTo(Math.round(x) + .5, 10);
+      g.lineTo(Math.round(x) + .5, h - 10);
+      g.stroke();
+    }
+    g.globalAlpha = 1;
+
+    // a pulse that rides the current beat
+    const r = 5 + 16 * Math.pow(1 - beatPhase, 3);
+    g.fillStyle = css("--hot");
+    g.globalAlpha = 0.25 + 0.6 * Math.pow(1 - beatPhase, 2);
+    g.beginPath();
+    g.arc(w / 2, 34, r, 0, Math.PI * 2);
+    g.fill();
+    g.globalAlpha = 1;
+  }
+
+  // =======================================================================
+  // Music
+  // =======================================================================
+
+  function noise(dur) {
+    const n = Math.floor(audio.sampleRate * dur);
+    const buf = audio.createBuffer(1, n, audio.sampleRate);
+    const d = buf.getChannelData(0);
+    for (let i = 0; i < n; i++) d[i] = Math.random() * 2 - 1;
+    const src = audio.createBufferSource();
+    src.buffer = buf;
+    return src;
+  }
+
+  function env(node, t, a, d, peak) {
+    const gn = audio.createGain();
+    gn.gain.setValueAtTime(0.0001, t);
+    gn.gain.exponentialRampToValueAtTime(peak, t + a);
+    gn.gain.exponentialRampToValueAtTime(0.0001, t + a + d);
+    node.connect(gn);
+    return gn;
+  }
+
+  function kick(t) {
+    const o = audio.createOscillator();
+    o.type = "sine";
+    o.frequency.setValueAtTime(132, t);
+    o.frequency.exponentialRampToValueAtTime(42, t + 0.13);
+    env(o, t, 0.004, 0.30, 0.9).connect(master);
+    o.start(t); o.stop(t + 0.36);
+  }
+
+  function snare(t) {
+    const s = noise(0.22);
+    const bp = audio.createBiquadFilter();
+    bp.type = "bandpass"; bp.frequency.value = 1750; bp.Q.value = 0.8;
+    s.connect(bp);
+    env(bp, t, 0.004, 0.17, 0.34).connect(master);
+    s.start(t); s.stop(t + 0.24);
+  }
+
+  function hat(t, open) {
+    const s = noise(open ? 0.20 : 0.05);
+    const hp = audio.createBiquadFilter();
+    hp.type = "highpass"; hp.frequency.value = 7200;
+    s.connect(hp);
+    env(hp, t, 0.002, open ? 0.16 : 0.035, 0.16).connect(master);
+    s.start(t); s.stop(t + 0.22);
+  }
+
+  function tone(t, freq, dur, type, peak, cutoff) {
+    const o = audio.createOscillator();
+    o.type = type;
+    o.frequency.setValueAtTime(freq, t);
+    const lp = audio.createBiquadFilter();
+    lp.type = "lowpass";
+    lp.frequency.setValueAtTime(cutoff, t);
+    o.connect(lp);
+    env(lp, t, 0.012, dur, peak).connect(master);
+    o.start(t); o.stop(t + dur + 0.05);
+  }
+
+  // A minor pentatonic keeps anything we pick consonant with anything else,
+  // which matters when the tempo is whatever the machine happened to be doing.
+  const SCALE = [0, 3, 5, 7, 10];
+  const ROOT = 55; // A1
+
+  function midi(n) { return 440 * Math.pow(2, (n - 69) / 12); }
+
+  function degree(i, oct) {
+    return ROOT + 12 * (oct || 0) + SCALE[((i % 5) + 5) % 5] + 12 * Math.floor(i / 5);
+  }
+
+  const KITS = {
+    shop: (t, s) => {
+      if (s % 4 === 0) kick(t);
+      if (s % 8 === 4) snare(t);
+      if (s % 2 === 0) hat(t, s % 8 === 6);
+      if (s % 4 === 0) tone(t, midi(degree([0, 0, 3, 2][(s / 4) % 4 | 0])), 0.42, "sawtooth", 0.20, 520);
+    },
+    drift: (t, s) => {
+      if (s % 8 === 0) kick(t);
+      if (s % 16 === 8) snare(t);
+      if (s % 4 === 2) hat(t, false);
+      if (s % 8 === 0) {
+        const base = [0, 4, 2, 5][(s / 8) % 4 | 0];
+        tone(t, midi(degree(base, 1)), 1.7, "sawtooth", 0.11, 900);
+        tone(t, midi(degree(base + 2, 1)), 1.7, "sawtooth", 0.09, 760);
+      }
+      if (s % 8 === 0) tone(t, midi(degree(0)), 1.5, "sine", 0.22, 300);
+    },
+    pulse: (t, s) => {
+      if (s % 4 === 0) kick(t);
+      if (s % 8 === 4) { snare(t); hat(t, true); }
+      hat(t, false);
+      if (s % 2 === 0) {
+        const seq = [0, 2, 1, 4, 0, 3, 1, 2];
+        tone(t, midi(degree(seq[(s / 2) % 8 | 0], 2)), 0.14, "square", 0.13, 2200);
+      }
+      if (s % 16 === 0) tone(t, midi(degree(0)), 2.0, "sine", 0.20, 260);
+    }
+  };
+
+  function scheduler() {
+    const spb = 60 / result.bpm;      // seconds per beat
+    const sps = spb / 4;              // 16th notes
+    while (nextNoteTime < audio.currentTime + SCHED_AHEAD) {
+      KITS[kit](nextNoteTime, step);
+      nextNoteTime += sps;
+      step = (step + 1) % 64;
+    }
+  }
+
+  function visualLoop() {
+    if (phase !== "playing") return;
+    rafId = requestAnimationFrame(visualLoop);
+    const spb = 60 / result.bpm;
+    const p = ((audio.currentTime % spb) / spb);
+    drawLocked(p);
+  }
+
+  function startMusic() {
+    phase = "playing";
+    master = audio.createGain();
+    master.gain.value = 0.0001;
+    master.gain.exponentialRampToValueAtTime(0.8, audio.currentTime + 1.2);
+    master.connect(audio.destination);
+
+    step = 0;
+    nextNoteTime = audio.currentTime + 0.08;
+    schedTimer = setInterval(scheduler, SCHED_TICK);
+
+    scopeTag.textContent = "Beat grid";
+    goBtn.dataset.armed = "true";
+    goLabel.textContent = "Stop";
+    dot.dataset.pulse = "true";
+    againBtn.disabled = false;
+    halveBtn.disabled = false;
+    cancelAnimationFrame(rafId);
+    visualLoop();
+  }
+
+  function stopMusic() {
+    clearInterval(schedTimer);
+    schedTimer = 0;
+    if (master) {
+      const t = audio.currentTime;
+      master.gain.cancelScheduledValues(t);
+      master.gain.setValueAtTime(master.gain.value, t);
+      master.gain.exponentialRampToValueAtTime(0.0001, t + 0.25);
+      const m = master;
+      setTimeout(() => { try { m.disconnect(); } catch (e) {} }, 400);
+      master = null;
+    }
+  }
+
+  // =======================================================================
+  // Mic lifecycle
+  // =======================================================================
+
+  async function startMic() {
+    // Tell iOS this session both records and plays, or it sends output to the
+    // earpiece the moment a microphone opens.
+    try {
+      if (navigator.audioSession) navigator.audioSession.type = "play-and-record";
+    } catch (e) { /* not supported; harmless */ }
+
+    audio = audio || new (window.AudioContext || window.webkitAudioContext)();
+    if (audio.state === "suspended") await audio.resume();
+
+    // All three of these would fight us: the browser's noise suppression is
+    // built to remove exactly the steady mechanical sound we are listening for.
+    micStream = await navigator.mediaDevices.getUserMedia({
+      audio: { echoCancellation: false, noiseSuppression: false, autoGainControl: false }
+    });
+
+    const src = audio.createMediaStreamSource(micStream);
+    analyser = audio.createAnalyser();
+    analyser.fftSize = 1024;
+    analyser.smoothingTimeConstant = 0;
+    freqBuf = new Float32Array(analyser.frequencyBinCount);
+    prevMag = null;
+    src.connect(analyser);
+  }
+
+  function stopMic() {
+    cancelAnimationFrame(rafId);
+    if (micStream) {
+      micStream.getTracks().forEach((t) => t.stop());
+      micStream = null;
+    }
+    analyser = null;
+  }
+
+  // =======================================================================
+  // UI wiring
+  // =======================================================================
+
+  function setStatus(text, tone) {
+    statusEl.textContent = text;
+    if (tone) statusEl.dataset.tone = tone; else delete statusEl.dataset.tone;
+  }
+
+  function resetButton() {
+    goLabel.textContent = "Listen";
+    delete goBtn.dataset.armed;
+    delete dot.dataset.pulse;
+    goBtn.disabled = false;
+  }
+
+  // ---- microphone troubleshooting ---------------------------------------
+  // A page cannot open browser or OS settings - chrome:// is deliberately
+  // unreachable from web content. What it can do is work out which of the
+  // several possible blocks is in the way and show only those steps, plus the
+  // one action that actually fixes the common case: escaping the frame.
+
+  const framed = (function () {
+    try { return window.self !== window.top; } catch (e) { return true; }
+  })();
+
+  async function micPermission() {
+    try {
+      if (navigator.permissions && navigator.permissions.query) {
+        const st = await navigator.permissions.query({ name: "microphone" });
+        return st.state;                       // granted | denied | prompt
+      }
+    } catch (e) { /* Firefox and others do not expose this query */ }
+    return "unknown";
+  }
+
+  const helpEl   = document.getElementById("help");
+  const helpTitle = document.getElementById("helpTitle");
+  const helpWhy  = document.getElementById("helpWhy");
+  const helpBody = document.getElementById("helpBody");
+
+  function hideHelp() { helpEl.hidden = true; }
+
+  function popoutBlock() {
+    const url = location.href;
+    return `
+      <a class="popout" id="popout" href="${url}" target="_blank" rel="noopener">
+        Open in a full tab
+      </a>
+      <p style="margin-top:10px">If that does nothing, copy this address and paste it into a new Chrome tab:</p>
+      <div class="copyline">
+        <input id="urlBox" type="text" readonly value="${url}" aria-label="Page address">
+        <button type="button" id="copyBtn">Copy</button>
+      </div>`;
+  }
+
+  const ANDROID_STEPS = `
+    <details>
+      <summary>Chrome itself may not have the microphone</summary>
+      <ol>
+        <li>Open Android <strong>Settings</strong> — not Chrome's settings</li>
+        <li>Tap <strong>Apps</strong>, then <strong>Chrome</strong></li>
+        <li>Tap <strong>Permissions</strong></li>
+        <li>Tap <strong>Microphone</strong> and choose <strong>Ask every time</strong></li>
+        <li>Come back here and tap Listen</li>
+      </ol>
+    </details>`;
+
+  const SITE_STEPS = `
+    <ol>
+      <li>Tap the <strong>sliders icon</strong> just left of the web address at the top
+          (older Chrome shows a padlock)</li>
+      <li>Tap <strong>Permissions</strong></li>
+      <li>Set <strong>Microphone</strong> to <strong>Allow</strong></li>
+      <li>Tap Listen again</li>
+    </ol>
+    <p>If Microphone isn't in that list, the page was never allowed to ask — try the full tab above.</p>`;
+
+  async function showHelp(err) {
+    const state = await micPermission();
+    const name = (err && err.name) || "";
+    let title, why, body;
+
+    if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
+      title = "This browser won't share a microphone";
+      why = "Microphone access needs a secure (https) page. Try opening this in Chrome or Safari.";
+      body = "";
+    } else if (name === "NotFoundError" || name === "OverconstrainedError") {
+      title = "No microphone found";
+      why = "The browser could not find a microphone on this device.";
+      body = ANDROID_STEPS;
+    } else if (framed) {
+      // Order matters here. A frame that was never granted microphone makes
+      // permissions.query report "denied" - identical to the user having
+      // blocked the site. Checking denied first sends people to a Permissions
+      // screen that does not list Microphone, because the page never got far
+      // enough to ask. Being inside a frame is the better explanation whenever
+      // both are true.
+      title = "This page can't reach the microphone inside a frame";
+      why = state === "denied"
+        ? "It is running inside another page that was never given microphone access, so it was refused without ever asking you. Changing browser settings will not help — the page has to escape the frame."
+        : "It is running inside another page, and you were never asked for permission. Opening it on its own usually fixes it.";
+      body = popoutBlock() + ANDROID_STEPS;
+    } else if (state === "denied") {
+      title = "Microphone is blocked for this page";
+      why = "You or the browser turned it off for this site. Two taps to turn it back on:";
+      body = SITE_STEPS + ANDROID_STEPS;
+    } else {
+      title = "Couldn't start the microphone";
+      why = "The browser refused the request" + (name ? " (" + name + ")." : ".");
+      body = SITE_STEPS + ANDROID_STEPS;
+    }
+
+    helpTitle.textContent = title;
+    helpWhy.textContent = why;
+    helpBody.innerHTML = body;
+    helpEl.hidden = false;
+
+    const copyBtn = document.getElementById("copyBtn");
+    if (copyBtn) {
+      copyBtn.addEventListener("click", () => {
+        const box = document.getElementById("urlBox");
+        box.select();
+        box.setSelectionRange(0, 99999);
+        try {
+          navigator.clipboard ? navigator.clipboard.writeText(box.value)
+                              : document.execCommand("copy");
+          copyBtn.textContent = "Copied";
+          setTimeout(() => { copyBtn.textContent = "Copy"; }, 1600);
+        } catch (e) {
+          copyBtn.textContent = "Select it";
+        }
+      });
+    }
+  }
+
+  async function beginListening() {
+    hint.style.display = "none";
+    scopeTag.textContent = "Onset energy";
+    envelope = []; binStart = 0; binPeak = 0; result = null;
+    machineVal.textContent = "—"; musicVal.textContent = "—"; lockVal.textContent = "—";
+    heat.style.width = "0%";
+    againBtn.disabled = true; halveBtn.disabled = true;
+
+    hideHelp();
+    try {
+      await startMic();
+    } catch (err) {
+      phase = "idle";
+      resetButton();
+      setStatus("Couldn't start the microphone. See below.", "bad");
+      showHelp(err);
+      return;
+    }
+
+    phase = "listening";
+    goLabel.textContent = "Listening…";
+    dot.dataset.pulse = "true";
+    goBtn.dataset.armed = "true";
+    setStatus("Listening. Hold the phone close to the machine and keep still.");
+    listenEndsAt = performance.now() + LISTEN_MS;
+    rafId = requestAnimationFrame(sampleLoop);
+  }
+
+  function stopEverything() {
+    stopMusic();
+    stopMic();
+    phase = "idle";
+    resetButton();
+    againBtn.disabled = false;
+    setStatus("Stopped.");
+  }
+
+  goBtn.addEventListener("click", () => {
+    if (phase === "idle") beginListening();
+    else stopEverything();
+  });
+
+  againBtn.addEventListener("click", () => {
+    stopMusic();
+    stopMic();
+    phase = "idle";
+    beginListening();
+  });
+
+  halveBtn.addEventListener("click", () => {
+    if (!result) return;
+    // Autocorrelation genuinely cannot tell a beat from its double. When it
+    // guesses wrong the fix is one tap, not another twelve seconds of listening.
+    let bpm = result.bpm > 118 ? result.bpm / 2 : result.bpm * 2;
+    result.bpm = bpm;
+    musicVal.textContent = Math.round(bpm);
+    setStatus(`Switched to ${Math.round(bpm)} bpm.`);
+  });
+
+  document.getElementById("kits").addEventListener("click", (e) => {
+    const btn = e.target.closest(".kit");
+    if (!btn) return;
+    kit = btn.dataset.kit;
+    for (const b of document.querySelectorAll(".kit")) {
+      b.setAttribute("aria-pressed", String(b === btn));
+    }
+  });
+
+  window.addEventListener("resize", fitCanvas);
+  fitCanvas();
+
+  // Check on load rather than making someone discover the problem while
+  // standing next to a running printer.
+  (async function preflight() {
+    if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
+      setStatus("This browser won't share a microphone with the page.", "bad");
+      showHelp(null);
+      return;
+    }
+    const state = await micPermission();
+    if (framed && state === "denied") {
+      setStatus("Can't reach the microphone from inside a frame.", "bad");
+      showHelp({ name: "NotAllowedError" });
+    } else if (state === "denied") {
+      setStatus("Microphone is blocked for this page.", "bad");
+      showHelp({ name: "NotAllowedError" });
+    } else if (state === "granted") {
+      setStatus("Microphone ready. Listening takes about 12 seconds.");
+    } else if (framed) {
+      setStatus("Ready. If tapping Listen does nothing, open this in a full tab — see below.");
+    }
+  })();
+})();
+</script>
