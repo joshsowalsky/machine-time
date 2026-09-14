@@ -268,7 +268,12 @@
   .kit:focus-visible { outline: 3px solid var(--cold); outline-offset: 2px; }
 
   /* ---- secondary row ---- */
-  .row { display: flex; gap: 10px; }
+  .row { display: flex; gap: 10px; flex-wrap: wrap; }
+  .ghost[aria-pressed="true"] {
+    background: var(--ink);
+    border-color: var(--ink);
+    color: var(--ground);
+  }
   .ghost {
     flex: 1;
     appearance: none;
@@ -455,6 +460,7 @@
   <div class="row">
     <button class="ghost" id="again" type="button" disabled>Listen again</button>
     <button class="ghost" id="halve" type="button" disabled>Half / double</button>
+    <button class="ghost" id="follow" type="button" aria-pressed="true">Keep following</button>
   </div>
 
   <p class="note">
@@ -486,6 +492,7 @@
   const statusEl = el("status"), hint = el("scopeHint"), scopeTag = el("scopeTag");
   const machineVal = el("machineVal"), machineUnit = el("machineUnit");
   const musicVal = el("musicVal"), lockVal = el("lockVal"), heat = el("heat");
+  const lockUnit = el("lockUnit");
   const againBtn = el("again"), halveBtn = el("halve");
   const canvas = el("scope"), g = canvas.getContext("2d");
 
@@ -620,9 +627,9 @@
   function decide() {
     const env = normalize(envelope);
     const found = findPeriod(env);
-    stopMic();
 
     if (!found || found.confidence < 0.12) {
+      stopMic();
       phase = "idle";
       setStatus("No steady rhythm found. Get closer to the machine, somewhere quiet, and try again.", "bad");
       resetButton();
@@ -632,7 +639,14 @@
 
     const tempo = chooseTempo(found.period);
     result = { period: found.period, confidence: found.confidence, bpm: tempo.bpm, ratio: tempo.ratio };
+    baseBpm = tempo.bpm;
+    basePeriod = found.period;
     showResult();
+
+    // The microphone stays open only if we are going to keep following the
+    // machine with it. Otherwise it is closed now, which is what lets iOS put
+    // the sound back on the speaker.
+    if (tracking) startTracking(); else stopMic();
     startMusic();
   }
 
@@ -767,6 +781,8 @@
     o.start(t); o.stop(t + 0.36);
   }
 
+  // The snare straddles the bottom of the listening band, so each one is
+  // registered and the detector ignores a short window after it.
   function snare(t, vel) {
     const v = vel === undefined ? 1 : vel;
     const s = noise(0.22);
@@ -775,13 +791,16 @@
     s.connect(bp);
     env(bp, t, 0.004, 0.10 + 0.09 * v, 0.34 * v).connect(master);
     s.start(t); s.stop(t + 0.24);
+    if (tracking) markHit(t);
   }
 
+  // Pushed above the listening band rather than gated: hats land on most
+  // sixteenths, and gating each one would leave almost no time to listen in.
   function hat(t, open, vel) {
     const v = vel === undefined ? 1 : vel;
     const s = noise(open ? 0.20 : 0.05);
     const hp = audio.createBiquadFilter();
-    hp.type = "highpass"; hp.frequency.value = 7200;
+    hp.type = "highpass"; hp.frequency.value = tracking ? 8500 : 7200;
     s.connect(hp);
     env(hp, t, 0.002, open ? 0.16 : 0.035, 0.16 * v).connect(master);
     s.start(t); s.stop(t + 0.22);
@@ -894,7 +913,10 @@
     const lastBar = barsInSec === SECTIONS[secIdx].bars - 1;
 
     // Filter position per section, drifting slowly so nothing sits still.
-    const cut = sec.cut * sty.bright * (0.85 + 0.3 * Math.sin(bar * 0.37));
+    // Capped below the listening band while tracking: a bright lead reaching
+    // into 2.5-5.5 kHz would be indistinguishable from the machine.
+    let cut = sec.cut * sty.bright * (0.85 + 0.3 * Math.sin(bar * 0.37));
+    if (tracking) cut = Math.min(cut, 2200);
 
     // --- drums ---
     const kicks = sty.kicks[bar % sty.kicks.length];
@@ -951,9 +973,186 @@
     }
   }
 
+  // =======================================================================
+  // Following the machine while the music plays
+  //
+  // Keeping the microphone open means the phone hears its own music. Telling
+  // the two apart sounds like a separation problem, and it is not: we wrote
+  // the music, so we know both its frequency content and the exact moment of
+  // every hit. Two cheap exclusions beat any amount of separation.
+  //
+  //   Frequency. We listen only between 2.5 and 5.5 kHz, where stepper whine
+  //   and gantry noise live. Everything tonal is capped below that band while
+  //   tracking, and the hats are pushed above it. The band is nearly ours
+  //   alone before anything is subtracted.
+  //
+  //   Time. Snares straddle the lower edge, and the scheduler knows exactly
+  //   when each one was queued, so a short window after each is ignored.
+  //
+  // The real hazard is not feedback. A *wrong* lock would hear its own wrong
+  // tempo, confirm it, and stay wrong forever - so corrections are small,
+  // rate-limited, and capped hard against the tempo we started from, and the
+  // loop never re-seeds itself no matter what it hears.
+  // =======================================================================
+
+  const BAND_LO_HZ   = 2500;
+  const BAND_HI_HZ   = 5500;
+  const GATE_MS      = 90;      // ignored after one of our own snares
+  const MAX_PULL     = 0.05;    // never drift more than this from the locked tempo
+  const CORRECT_GAIN = 0.18;
+  const CORRECT_EVERY = 1.5;    // seconds
+
+  // iOS hands output to the earpiece for as long as any microphone is open,
+  // which turns "follows the machine" into "inaudible". Android does not. So
+  // the default differs by platform rather than pretending they behave alike.
+  const IS_IOS = /iP(hone|ad|od)/.test(navigator.userAgent) ||
+                 (navigator.platform === "MacIntel" && navigator.maxTouchPoints > 1);
+  let tracking = !IS_IOS;
+
+  let lock = null, beatsPerCycle = 1, baseBpm = 0, basePeriod = 0;
+  let ourHits = [], trackPrev = null, binLo = 0, binHi = 0;
+  let recentFlux = [], lastCorrectAt = 0, lastOnsetAt = 0;
+
+  // A type-II phase-locked loop, the same one as the Python core this grew
+  // from, with one deliberate difference: it will not re-seed on a large
+  // error. Off by more than half a period while our own music is playing is
+  // far more likely to be us than the machine changing speed, and re-seeding
+  // on that is precisely how a wrong lock becomes permanent.
+  function PhaseLock(alpha, beta, maxSkip) {
+    this.alpha = alpha; this.beta = beta; this.maxSkip = maxSkip;
+    this.period = null; this.phase = null; this.events = 0;
+  }
+  PhaseLock.prototype.seed = function (period, t) {
+    this.period = period; this.phase = t; this.events = 0;
+    // A hard fence around where the estimate is allowed to go. Without it, a
+    // few stray observations that slip past the rejection below are enough to
+    // walk the period several percent off, and once it leaves the correction
+    // window tracking stops silently and never resumes.
+    this.minP = period * (1 - MAX_PULL);
+    this.maxP = period * (1 + MAX_PULL);
+  };
+  PhaseLock.prototype.update = function (t) {
+    if (this.period === null || this.phase === null) { this.phase = t; return; }
+    let cycles = Math.round((t - this.phase) / this.period);
+    cycles = Math.min(Math.max(cycles, 1), this.maxSkip);
+    const predicted = this.phase + cycles * this.period;
+    const err = t - predicted;
+    // A quarter period, not a half. Anything further out is far more likely to
+    // be our own music than the machine, and this is the cheapest place to
+    // refuse it.
+    if (Math.abs(err) > 0.25 * this.period) return;    // reject; never re-seed
+    this.phase = predicted + this.alpha * err;
+    this.period += this.beta * err / cycles;
+    this.period = Math.min(this.maxP, Math.max(this.minP, this.period));
+    this.events++;
+  };
+
+  function emitTime(t) {
+    return t + (audio.outputLatency || audio.baseLatency || 0);
+  }
+
+  function markHit(t) {
+    ourHits.push(emitTime(t));
+    if (ourHits.length > 32) ourHits.shift();
+  }
+
+  function gated(now) {
+    for (let i = 0; i < ourHits.length; i++) {
+      if (now >= ourHits[i] && now < ourHits[i] + GATE_MS / 1000) return true;
+    }
+    return false;
+  }
+
+  function trackTick() {
+    if (!analyser || !result || !lock) return;
+    const now = audio.currentTime;
+
+    analyser.getFloatFrequencyData(freqBuf);
+    if (!trackPrev) {
+      trackPrev = new Float32Array(freqBuf.length);
+      trackPrev.set(freqBuf);
+      return;
+    }
+
+    // Roll the previous frame every time, gated or not. Skipping it would make
+    // the first ungated frame diff against a stale spectrum and report an
+    // enormous onset that never happened.
+    let flux = 0;
+    for (let i = binLo; i <= binHi; i++) {
+      let v = freqBuf[i];
+      if (!isFinite(v) || v < -100) v = -100;
+      const d = v - trackPrev[i];
+      if (d > 0) flux += d;
+      trackPrev[i] = v;
+    }
+    for (let i = 0; i < binLo; i++) trackPrev[i] = freqBuf[i];
+    for (let i = binHi + 1; i < freqBuf.length; i++) trackPrev[i] = freqBuf[i];
+
+    if (gated(now)) return;
+
+    recentFlux.push(flux);
+    if (recentFlux.length > 180) recentFlux.shift();
+    if (recentFlux.length < 45) return;
+
+    let mean = 0;
+    for (const v of recentFlux) mean += v;
+    mean /= recentFlux.length;
+    let acc = 0;
+    for (const v of recentFlux) acc += (v - mean) * (v - mean);
+    const sd = Math.sqrt(acc / recentFlux.length);
+
+    // At most one onset per 60 ms; anything faster is the same hit ringing.
+    if (sd > 0 && flux > mean + 2.2 * sd && now - lastOnsetAt > 0.06) {
+      lastOnsetAt = now;
+      lock.update(now);
+    }
+
+    if (now - lastCorrectAt > CORRECT_EVERY && lock.events >= 6) {
+      lastCorrectAt = now;
+      applyCorrection();
+    }
+  }
+
+  function applyCorrection() {
+    if (!lock.period || !basePeriod) return;
+    if (Math.abs(lock.period - basePeriod) / basePeriod > MAX_PULL) return;
+
+    const target = beatsPerCycle * 60 / lock.period;
+    let bpm = result.bpm + (target - result.bpm) * CORRECT_GAIN;
+    bpm = Math.min(baseBpm * (1 + MAX_PULL), Math.max(baseBpm * (1 - MAX_PULL), bpm));
+    result.bpm = bpm;
+    showDrift();
+  }
+
+  function showDrift() {
+    const pull = (result.bpm / baseBpm - 1) * 100;
+    musicVal.textContent = Math.round(result.bpm);
+    lockUnit.textContent = !tracking ? "confidence"
+      : Math.abs(pull) < 0.05 ? "confidence · holding"
+      : "confidence · " + (pull > 0 ? "+" : "") + pull.toFixed(1) + "%";
+  }
+
+  function startTracking() {
+    if (!analyser) { tracking = false; return; }
+    const hz = audio.sampleRate / analyser.fftSize;
+    binLo = Math.max(1, Math.floor(BAND_LO_HZ / hz));
+    binHi = Math.min(freqBuf.length - 1, Math.ceil(BAND_HI_HZ / hz));
+    lock = new PhaseLock(0.22, 0.02, 4);   // slow period adaptation: thermal drift, not reaction
+    lock.seed(result.period, audio.currentTime);
+    basePeriod = result.period;
+    baseBpm = result.bpm;
+    beatsPerCycle = result.bpm * result.period / 60;
+    trackPrev = null;
+    recentFlux = [];
+    ourHits = [];
+    lastCorrectAt = audio.currentTime;
+    lastOnsetAt = 0;
+  }
+
   function visualLoop() {
     if (phase !== "playing") return;
     rafId = requestAnimationFrame(visualLoop);
+    if (tracking) trackTick();
     const spb = 60 / result.bpm;
     const p = ((audio.currentTime % spb) / spb);
     drawLocked(p);
@@ -1233,6 +1432,35 @@
     result.bpm = bpm;
     musicVal.textContent = Math.round(bpm);
     setStatus(`Switched to ${Math.round(bpm)} bpm.`);
+  });
+
+  const followBtn = document.getElementById("follow");
+  followBtn.setAttribute("aria-pressed", String(tracking));
+  if (IS_IOS) {
+    followBtn.title = "Off by default on iPhone: iOS sends sound to the earpiece while a microphone is open.";
+  }
+
+  followBtn.addEventListener("click", () => {
+    tracking = !tracking;
+    followBtn.setAttribute("aria-pressed", String(tracking));
+
+    if (phase === "playing") {
+      if (tracking) {
+        // Needs the microphone back, which means listening again from scratch.
+        setStatus("Turn on before listening to follow the machine live. Tap Listen again.");
+        tracking = false;
+        followBtn.setAttribute("aria-pressed", "false");
+        return;
+      }
+      stopMic();
+      lock = null;
+      setStatus("Holding the tempo it found. Microphone off.");
+      showDrift();
+    } else {
+      setStatus(tracking
+        ? "Will keep listening and follow the machine as it drifts."
+        : "Will lock once and hold. Microphone switches off before the music starts.");
+    }
   });
 
   document.getElementById("kits").addEventListener("click", (e) => {
