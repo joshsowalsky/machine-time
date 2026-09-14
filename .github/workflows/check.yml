@@ -1,0 +1,66 @@
+name: Check
+
+# GitHub Pages publishes whatever lands on main, within about a minute. There
+# is no review step and no staging copy, so a broken push is a broken page in
+# someone's hand. These are the cheapest checks that would actually catch that.
+
+on:
+  push:
+    branches: ["**"]
+  pull_request:
+
+jobs:
+  page:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: The page is present and not truncated
+        run: |
+          set -euo pipefail
+          test -f index.html || { echo "::error::index.html is missing - Pages would serve a 404."; exit 1; }
+          bytes=$(wc -c < index.html)
+          echo "index.html is $bytes bytes"
+          # A partial write or a bad merge leaves something far smaller than this.
+          if [ "$bytes" -lt 8000 ]; then
+            echo "::error::index.html is only $bytes bytes; it should be tens of kilobytes."
+            exit 1
+          fi
+
+      - name: The parts that make it work are still there
+        run: |
+          set -euo pipefail
+          fail=0
+          check() {
+            if grep -q "$1" index.html; then
+              echo "ok   $2"
+            else
+              echo "::error::missing: $2"
+              fail=1
+            fi
+          }
+          check "<title>"                 "a page title"
+          check "getUserMedia"            "the microphone request"
+          check "AudioContext"            "the audio engine"
+          # These three are load-bearing and look like noise to anyone tidying
+          # up. Browser audio processing is built to remove exactly the steady
+          # mechanical sound this page listens for.
+          check "echoCancellation: false" "echo cancellation disabled"
+          check "noiseSuppression: false" "noise suppression disabled"
+          check "autoGainControl: false"  "auto gain disabled"
+          exit $fail
+
+      - name: The script parses
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import pathlib, re, sys
+          html = pathlib.Path("index.html").read_text()
+          m = re.search(r"<script>(.*?)</script>", html, re.S)
+          if not m:
+              sys.exit("No inline <script> found in index.html")
+          pathlib.Path("page.js").write_text(m.group(1))
+          print(f"extracted {len(m.group(1))} chars of script")
+          PY
+          node --check page.js
+          echo "Script parses cleanly."
