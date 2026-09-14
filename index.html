@@ -755,30 +755,35 @@
     return gn;
   }
 
-  function kick(t) {
+  // Every voice takes a velocity. Identical hits every bar is most of what
+  // makes generated music sound generated.
+  function kick(t, vel) {
+    const v = vel === undefined ? 1 : vel;
     const o = audio.createOscillator();
     o.type = "sine";
-    o.frequency.setValueAtTime(132, t);
+    o.frequency.setValueAtTime(120 + 24 * v, t);
     o.frequency.exponentialRampToValueAtTime(42, t + 0.13);
-    env(o, t, 0.004, 0.30, 0.9).connect(master);
+    env(o, t, 0.004, 0.30, 0.9 * v).connect(master);
     o.start(t); o.stop(t + 0.36);
   }
 
-  function snare(t) {
+  function snare(t, vel) {
+    const v = vel === undefined ? 1 : vel;
     const s = noise(0.22);
     const bp = audio.createBiquadFilter();
-    bp.type = "bandpass"; bp.frequency.value = 1750; bp.Q.value = 0.8;
+    bp.type = "bandpass"; bp.frequency.value = 1600 + 300 * v; bp.Q.value = 0.8;
     s.connect(bp);
-    env(bp, t, 0.004, 0.17, 0.34).connect(master);
+    env(bp, t, 0.004, 0.10 + 0.09 * v, 0.34 * v).connect(master);
     s.start(t); s.stop(t + 0.24);
   }
 
-  function hat(t, open) {
+  function hat(t, open, vel) {
+    const v = vel === undefined ? 1 : vel;
     const s = noise(open ? 0.20 : 0.05);
     const hp = audio.createBiquadFilter();
     hp.type = "highpass"; hp.frequency.value = 7200;
     s.connect(hp);
-    env(hp, t, 0.002, open ? 0.16 : 0.035, 0.16).connect(master);
+    env(hp, t, 0.002, open ? 0.16 : 0.035, 0.16 * v).connect(master);
     s.start(t); s.stop(t + 0.22);
   }
 
@@ -794,54 +799,155 @@
     o.start(t); o.stop(t + dur + 0.05);
   }
 
-  // A minor pentatonic keeps anything we pick consonant with anything else,
-  // which matters when the tempo is whatever the machine happened to be doing.
-  const SCALE = [0, 3, 5, 7, 10];
-  const ROOT = 55; // A1
+  // =======================================================================
+  // The music
+  //
+  // A fixed loop is the obvious way to do this and it is unlistenable after
+  // ninety seconds, which is the wrong length for something you leave running
+  // next to a printer. So nothing here is a fixed pattern. There is a chord
+  // progression, an arrangement that moves through sections, a melodic motif
+  // that is varied rather than repeated, drums with fills and per-hit
+  // variation, and a filter that opens and closes across the sections.
+  //
+  // The randomness is seeded from the machine's own measured period, so a
+  // given printer running a given speed always writes the same piece - and a
+  // different one writes a different piece. Re-running it is reproducible;
+  // pointing it at something else is not.
+  // =======================================================================
+
+  // A natural minor, so there is somewhere to move harmonically. Pentatonic
+  // can't be wrong, but it also can't go anywhere.
+  const MINOR = [0, 2, 3, 5, 7, 8, 10];
+  const ROOT = 45;                    // A2
+  const PROG = [0, 5, 2, 6];          // i - VI - III - VII. Always works.
+
+  let seed = 1;
+  function rnd() {
+    seed = (seed * 1664525 + 1013904223) >>> 0;
+    return seed / 4294967296;
+  }
+  function chance(p) { return rnd() < p; }
+  function pick(arr) { return arr[Math.floor(rnd() * arr.length)]; }
 
   function midi(n) { return 440 * Math.pow(2, (n - 69) / 12); }
 
-  function degree(i, oct) {
-    return ROOT + 12 * (oct || 0) + SCALE[((i % 5) + 5) % 5] + 12 * Math.floor(i / 5);
+  // Scale degrees, not semitones: everything stays in key no matter how it is
+  // transposed or inverted later.
+  function scaleNote(deg, oct) {
+    const d = ((deg % 7) + 7) % 7;
+    const o = Math.floor(deg / 7) + (oct || 0);
+    return ROOT + MINOR[d] + 12 * o;
   }
 
-  const KITS = {
-    shop: (t, s) => {
-      if (s % 4 === 0) kick(t);
-      if (s % 8 === 4) snare(t);
-      if (s % 2 === 0) hat(t, s % 8 === 6);
-      if (s % 4 === 0) tone(t, midi(degree([0, 0, 3, 2][(s / 4) % 4 | 0])), 0.42, "sawtooth", 0.20, 520);
-    },
-    drift: (t, s) => {
-      if (s % 8 === 0) kick(t);
-      if (s % 16 === 8) snare(t);
-      if (s % 4 === 2) hat(t, false);
-      if (s % 8 === 0) {
-        const base = [0, 4, 2, 5][(s / 8) % 4 | 0];
-        tone(t, midi(degree(base, 1)), 1.7, "sawtooth", 0.11, 900);
-        tone(t, midi(degree(base + 2, 1)), 1.7, "sawtooth", 0.09, 760);
-      }
-      if (s % 8 === 0) tone(t, midi(degree(0)), 1.5, "sine", 0.22, 300);
-    },
-    pulse: (t, s) => {
-      if (s % 4 === 0) kick(t);
-      if (s % 8 === 4) { snare(t); hat(t, true); }
-      hat(t, false);
-      if (s % 2 === 0) {
-        const seq = [0, 2, 1, 4, 0, 3, 1, 2];
-        tone(t, midi(degree(seq[(s / 2) % 8 | 0], 2)), 0.14, "square", 0.13, 2200);
-      }
-      if (s % 16 === 0) tone(t, midi(degree(0)), 2.0, "sine", 0.20, 260);
-    }
+  const SECTIONS = [
+    { bars: 4, kick: 0.55, dense: false, snare: false, bass: true,  arp: false, pad: true,  lead: false, cut: 700  },
+    { bars: 4, kick: 1,    dense: true,  snare: true,  bass: true,  arp: true,  pad: true,  lead: false, cut: 1250 },
+    { bars: 8, kick: 1,    dense: true,  snare: true,  bass: true,  arp: true,  pad: false, lead: true,  cut: 2100 },
+    { bars: 4, kick: 0,    dense: false, snare: false, bass: false, arp: true,  pad: true,  lead: true,  cut: 900  }
+  ];
+
+  const STYLE = {
+    shop:  { wave: "sawtooth", kicks: [[0, 4, 8, 12], [0, 4, 8, 12, 14]], bright: 1.0, leadOct: 2 },
+    drift: { wave: "sawtooth", kicks: [[0, 8], [0, 8, 11]],               bright: 0.7, leadOct: 2 },
+    pulse: { wave: "square",   kicks: [[0, 4, 8, 12], [0, 3, 6, 10, 12]], bright: 1.5, leadOct: 3 }
   };
+
+  let bar = 0, secIdx = 0, barsInSec = 0, motif = [];
+
+  function makeMotif() {
+    const m = [];
+    for (let i = 0; i < 8; i++) m.push(chance(0.28) ? null : Math.floor(rnd() * 7) - 2);
+    return m;
+  }
+
+  // Vary, never re-roll wholesale: a motif you can still recognise after it
+  // changes is the difference between development and shuffling.
+  function varyMotif(m) {
+    const out = m.slice();
+    const op = rnd();
+    if (op < 0.30) return out.map((v) => (v === null ? null : v + (chance(0.5) ? 1 : -1)));
+    if (op < 0.50) return out.reverse();
+    if (op < 0.80) {
+      const i = Math.floor(rnd() * 8);
+      out[i] = chance(0.25) ? null : Math.floor(rnd() * 7) - 2;
+      return out;
+    }
+    return out;
+  }
+
+  function advanceBar() {
+    bar++;
+    barsInSec++;
+    if (barsInSec >= SECTIONS[secIdx].bars) {
+      barsInSec = 0;
+      // After the intro plays once, cycle the remaining sections forever.
+      secIdx = secIdx === 0 ? 1 : (secIdx === SECTIONS.length - 1 ? 1 : secIdx + 1);
+      motif = varyMotif(motif);
+    }
+  }
+
+  function playStep(t, s) {
+    const sib = s % 16;
+    const sec = SECTIONS[secIdx];
+    const sty = STYLE[kit] || STYLE.shop;
+    const chord = PROG[bar % PROG.length];
+    const lastBar = barsInSec === SECTIONS[secIdx].bars - 1;
+
+    // Filter position per section, drifting slowly so nothing sits still.
+    const cut = sec.cut * sty.bright * (0.85 + 0.3 * Math.sin(bar * 0.37));
+
+    // --- drums ---
+    const kicks = sty.kicks[bar % sty.kicks.length];
+    if (sec.kick > 0 && kicks.indexOf(sib) >= 0 && chance(sec.kick)) {
+      kick(t, sib === 0 ? 1 : 0.82 + rnd() * 0.18);
+    }
+    if (sec.snare) {
+      if (sib === 4 || sib === 12) snare(t, 0.9 + rnd() * 0.2);
+      // A fill in the last bar of the section, so the change is heard coming.
+      else if (lastBar && sib >= 8 && chance(0.35)) snare(t, 0.5 + rnd() * 0.4);
+      else if (chance(0.04)) snare(t, 0.28);          // ghost
+    }
+    if (sec.dense ? true : sib % 2 === 0) {
+      if (chance(sec.dense ? 0.85 : 1)) {
+        hat(t, sib === 14 && chance(0.5), sib % 4 === 0 ? 1 : 0.55 + rnd() * 0.3);
+      }
+    }
+
+    // --- bass: root of the bar's chord ---
+    if (sec.bass && (sib === 0 || (sib === 10 && chance(0.5)))) {
+      tone(t, midi(scaleNote(chord, 0)), sib === 0 ? 0.9 : 0.35, "sine", 0.30, 320);
+    }
+
+    // --- arpeggio over the chord tones ---
+    if (sec.arp && sib % 2 === 0 && chance(0.9)) {
+      const tones = [chord, chord + 2, chord + 4, chord + 2];
+      tone(t, midi(scaleNote(tones[(sib / 2) % 4], 2)), 0.16, sty.wave, 0.10, cut);
+    }
+
+    // --- pad: the chord, held ---
+    if (sec.pad && sib === 0) {
+      for (const d of [chord, chord + 2, chord + 4]) {
+        tone(t, midi(scaleNote(d, 1)), 1.9, "sawtooth", 0.055, cut * 0.7);
+      }
+    }
+
+    // --- lead: the motif, on eighths ---
+    if (sec.lead && sib % 2 === 0) {
+      const n = motif[(sib / 2) % 8];
+      if (n !== null && n !== undefined) {
+        tone(t, midi(scaleNote(chord + n, sty.leadOct)), 0.26, sty.wave, 0.13, cut * 1.4);
+      }
+    }
+  }
 
   function scheduler() {
     const spb = 60 / result.bpm;      // seconds per beat
     const sps = spb / 4;              // 16th notes
     while (nextNoteTime < audio.currentTime + SCHED_AHEAD) {
-      KITS[kit](nextNoteTime, step);
+      playStep(nextNoteTime, step);
       nextNoteTime += sps;
-      step = (step + 1) % 64;
+      step++;
+      if (step % 16 === 0) advanceBar();
     }
   }
 
@@ -859,6 +965,14 @@
     master.gain.value = 0.0001;
     master.gain.exponentialRampToValueAtTime(0.8, audio.currentTime + 1.2);
     master.connect(audio.destination);
+
+    // Seed the piece from the machine's own measured period. The same printer
+    // at the same speed always writes the same music; a different machine
+    // writes a different piece.
+    seed = (Math.floor(result.period * 1e6) ^ 0x9e3779b9) >>> 0;
+    if (seed === 0) seed = 1;
+    bar = 0; secIdx = 0; barsInSec = 0;
+    motif = makeMotif();
 
     step = 0;
     nextNoteTime = audio.currentTime + 0.08;
